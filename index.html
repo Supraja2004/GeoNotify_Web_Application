@@ -1,0 +1,208 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>GeoNotify - Home</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.css" />
+
+  <style>
+    html,body { height:100%; margin:0; font-family: Arial, sans-serif; background:#e6f7e6; }
+    header { background:#4CAF50; color:white; padding:20px; text-align:center; box-shadow:0 2px 6px rgba(0,0,0,0.2); }
+    h1 { margin:0; font-size:2rem; }
+    p { font-size:1rem; margin:5px 0 15px; }
+
+    #map { height:70vh; width:90%; margin:0 auto; border-radius:10px; box-shadow:0 2px 8px rgba(0,0,0,0.2); }
+    .panel {
+      position:absolute; left:10px; top:100px; z-index:1000; background:white;
+      padding:12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,0.3);
+      width:220px;
+    }
+    .panel input, .panel button { width:100%; margin-bottom:6px; padding:6px; border-radius:4px; border:1px solid #ccc; }
+    .panel button { background:#4CAF50; color:white; border:none; cursor:pointer; transition:0.3s; }
+    .panel button:hover { background:#45a049; }
+    .panel div { margin-bottom:6px; }
+    .panel #status { font-size:12px; color:#333; margin-top:4px; }
+
+    footer { background:#4CAF50; color:white; text-align:center; padding:10px; position:relative; bottom:0; width:100%; }
+
+    @media (max-width:768px) {
+      .panel { width:90%; top:80px; left:5%; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>🌿 GeoNotify</h1>
+    <p>Smart geofencing with reminders — your location-aware assistant</p>
+  </header>
+
+  <div id="map"></div>
+
+  <div class="panel">
+    <div>
+      <input id="name" placeholder="Geofence name" />
+      <input id="reminder" placeholder="Reminder text" />
+      <button id="save">Save fence</button>
+    </div>
+    <div>
+      <button id="draw-start">Start drawing</button>
+      <button id="load">Load fences</button>
+      <button id="watch">Start watch</button>
+      <div id="status"></div>
+    </div>
+    <div style="font-size:11px;color:#555;">Click map to add polygon points. Click 'Save' after ≥3 points.</div>
+  </div>
+
+  <footer>
+    &copy; 2025 GeoNotify. All rights reserved. | Data © OpenStreetMap contributors
+  </footer>
+
+  <!-- Scripts -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
+  <script src="https://unpkg.com/leaflet-control-geocoder/dist/Control.Geocoder.js"></script>
+
+  <script>
+  const API = 'http://127.0.0.1:3000/api';
+
+  const map = L.map('map').setView([12.9716,77.5946], 13);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:19,
+    attribution:'© OpenStreetMap contributors'
+  }).addTo(map);
+
+ 
+  if (typeof L.Control.Geocoder !== 'undefined') {
+    const geocoder = L.Control.Geocoder.photon({
+      url: 'https://photon.komoot.io/api/',
+    });
+
+    const searchControl = L.Control.geocoder({
+      placeholder: "Search for buildings, streets, areas...",
+      defaultMarkGeocode: true,
+      geocoder: geocoder,
+      showResultIcons: true
+    })
+    .on('markgeocode', function(e) {
+      const latlng = e.geocode.center;
+      map.setView(latlng, 17);
+      L.marker(latlng)
+        .addTo(map)
+        .bindPopup(e.geocode.name || e.geocode.properties.name)
+        .openPopup();
+    })
+    .addTo(map);
+  } else {
+    alert("Leaflet Control Geocoder failed to load");
+  }
+
+  // Drawing geofences
+  let drawMode = false;
+  let drawMarkers = [];
+  let currentCoords = [];
+  let drawnLayers = L.featureGroup().addTo(map);
+  let fences = [];
+
+  map.on('click', e => {
+    if (!drawMode) return;
+    const m = L.circleMarker(e.latlng, {radius:6, color:'#d00'}).addTo(map);
+    drawMarkers.push(m);
+    currentCoords.push([e.latlng.lng, e.latlng.lat]);
+  });
+
+  document.getElementById('draw-start').addEventListener('click', () => {
+    drawMode = !drawMode;
+    document.getElementById('draw-start').textContent = drawMode ? 'Stop drawing' : 'Start drawing';
+    if (!drawMode && currentCoords.length === 0) drawMarkers.forEach(m => map.removeLayer(m));
+  });
+
+  document.getElementById('save').addEventListener('click', async () => {
+    const name = document.getElementById('name').value.trim();
+    const reminder = document.getElementById('reminder').value.trim();
+    if (!name) return alert('Enter name');
+    if (currentCoords.length < 3) return alert('Need at least 3 points');
+    try {
+      const resp = await fetch(API + '/geofences', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ name, reminder, coordinates: currentCoords })
+      });
+      const saved = await resp.json();
+      alert('Saved fence: ' + saved._id);
+      drawMarkers.forEach(m => map.removeLayer(m));
+      drawMarkers = [];
+      currentCoords = [];
+      drawMode = false;
+      document.getElementById('draw-start').textContent = 'Start drawing';
+      loadFences();
+    } catch (err) { alert('Error: ' + err.message); }
+  });
+
+  async function loadFences(){
+    drawnLayers.clearLayers();
+    const res = await fetch(API + '/geofences');
+    fences = await res.json();
+    fences.forEach(f => {
+      const latlngs = f.coordinates.map(c => [c[1], c[0]]);
+      const poly = L.polygon(latlngs, { color: '#007bff', weight: 2 }).addTo(drawnLayers);
+      poly.bindPopup(`<b>${escapeHtml(f.name)}</b><br>${escapeHtml(f.reminder)}`);
+    });
+  }
+  document.getElementById('load').addEventListener('click', loadFences);
+  loadFences();
+
+  let watchId = null;
+  let insideSet = new Set();
+
+  document.getElementById('watch').addEventListener('click', async () => {
+    if (watchId) {
+      navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      document.getElementById('watch').textContent = 'Start watch';
+      document.getElementById('status').textContent = 'Stopped';
+      insideSet.clear();
+      return;
+    }
+    if (Notification && Notification.permission !== 'granted') await Notification.requestPermission();
+    if (!navigator.geolocation) return alert('Geolocation not supported');
+    document.getElementById('watch').textContent = 'Stop watch';
+    document.getElementById('status').textContent = 'Watching...';
+    await loadFences();
+    watchId = navigator.geolocation.watchPosition(onPos, err => {
+      console.error(err);
+      document.getElementById('status').textContent = 'Geolocation error';
+    }, { enableHighAccuracy:true, maximumAge:2000, timeout:10000 });
+  });
+
+  async function onPos(pos){
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    document.getElementById('status').textContent = `You: ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    const pt = turf.point([lng, lat]);
+    for (const f of fences) {
+      let coords = f.coordinates.slice();
+      const first = coords[0], last = coords[coords.length-1];
+      if (!first || !last || first[0]!==last[0]||first[1]!==last[1]) coords.push(first);
+      const poly = turf.polygon([coords]);
+      const key = f._id;
+      if (turf.booleanPointInPolygon(pt, poly) && !insideSet.has(key)) {
+        insideSet.add(key);
+        notifyUser(`Entered: ${f.name}`, f.reminder||'Reminder');
+      } else if (!turf.booleanPointInPolygon(pt, poly) && insideSet.has(key)) {
+        insideSet.delete(key);
+      }
+    }
+  }
+
+  function notifyUser(title, body) {
+    if (Notification && Notification.permission === 'granted') {
+      new Notification(title, { body });
+    } else { alert(title + '\n' + body); }
+  }
+
+  function escapeHtml(s){ return (s||'').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+  </script>
+</body>
+</html>
