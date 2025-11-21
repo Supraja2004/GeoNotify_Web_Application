@@ -2,7 +2,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const turf = require('@turf/turf');
 require('dotenv').config();
 
 const app = express();
@@ -59,6 +58,19 @@ app.get('/api/geofences', async (req, res) => {
     const items = await Geofence.find().sort({ createdAt: -1 }).lean();
     res.json(items);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete a geofence by ID
+app.delete('/api/geofences/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Geofence.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ error: 'Geofence not found' });
+    res.json({ message: 'Geofence deleted' });
+  } catch (err) {
+    console.error(err);
     res.status(500).json({ error: err.message });
   }
 });
